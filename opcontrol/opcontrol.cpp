@@ -17,6 +17,11 @@
 /*
  * Binary implementation of the original opcontrol script due to missing tools
  * like awk, test, etc.
+ *
+ * Enhanced to support mips 24K core (original supported only armv6 & armv7).
+ * 24K has different counter events for perf-counter 0 & 1, so that capability
+ * is added to the embedded "event_info" struct. Neither ARM or MIPS supports
+ * oprofile unit_mask, so that feature is not implemented.
  */
 
 #include <unistd.h>
@@ -36,10 +41,28 @@
 #define verbose(fmt...)
 #endif
 
+struct event_info {
+    int id;
+    int valid_ctr_mask;
+    const char *name;
+    const char *explanation;
+}; 
+
+
+/* Oprofile events tables are embedded here for all architectures */
+
+#define CTR0    (1 << 0)
+#define CTR1    (1 << 1)
+#define CTR2    (1 << 2)
+#define CTR3    (1 << 3)
+#define CTR4    (1 << 4)
+
+
+#if defined(__arm__)
+
 /* Experiments found that using a small interval may hang the device, and the
  * more events tracked simultaneously, the longer the interval has to be.
  */
-
 #if !defined(WITH_ARM_V7_A)
 #define MAX_EVENTS 3
 int min_count[MAX_EVENTS] = {150000, 200000, 250000};
@@ -47,6 +70,256 @@ int min_count[MAX_EVENTS] = {150000, 200000, 250000};
 #define MAX_EVENTS 5
 int min_count[MAX_EVENTS] = {150000, 200000, 250000, 300000, 350000};
 #endif
+
+const char *default_event = "CPU_CYCLES";
+
+struct event_info event_info[] = {
+#if !defined(WITH_ARM_V7_A)
+    /* events from file events/arm/armv6/events */
+    {0x00, CTR0 | CTR1, "IFU_IFETCH_MISS",
+     "number of instruction fetch misses"},
+    {0x01, CTR0 | CTR1, "CYCLES_IFU_MEM_STALL",
+     "cycles instruction fetch pipe is stalled"},
+    {0x02, CTR0 | CTR1, "CYCLES_DATA_STALL",
+     "cycles stall occurs for due to data dependency"},
+    {0x03, CTR0 | CTR1, "ITLB_MISS",
+     "number of Instruction MicroTLB misses"},
+    {0x04, CTR0 | CTR1, "DTLB_MISS",
+     "number of Data MicroTLB misses"},
+    {0x05, CTR0 | CTR1, "BR_INST_EXECUTED",
+     "branch instruction executed w/ or w/o program flow change"},
+    {0x06, CTR0 | CTR1, "BR_INST_MISS_PRED",
+     "branch mispredicted"},
+    {0x07, CTR0 | CTR1, "INSN_EXECUTED",
+     "instructions executed"},
+    {0x09, CTR0 | CTR1, "DCACHE_ACCESS",
+     "data cache access, cacheable locations"},
+    {0x0a, CTR0 | CTR1, "DCACHE_ACCESS_ALL",
+     "data cache access, all locations"},
+    {0x0b, CTR0 | CTR1, "DCACHE_MISS",
+     "data cache miss"},
+    {0x0c, CTR0 | CTR1, "DCACHE_WB",
+     "data cache writeback, 1 event for every half cacheline"},
+    {0x0d, CTR0 | CTR1, "PC_CHANGE",
+     "number of times the program counter was changed without a mode switch"},
+    {0x0f, CTR0 | CTR1, "TLB_MISS",
+     "Main TLB miss"},
+    {0x10, CTR0 | CTR1, "EXP_EXTERNAL",
+     "Explict external data access"},
+    {0x11, CTR0 | CTR1, "LSU_STALL",
+     "cycles stalled because Load Store request queque is full"},
+    {0x12, CTR0 | CTR1, "WRITE_DRAIN",
+     "Times write buffer was drained"},
+    {0x20, CTR0 | CTR1, "ETMEXTOUT0",
+     "nuber of cycles ETMEXTOUT[0] signal was asserted"},
+    {0x21, CTR0 | CTR1, "ETMEXTOUT1",
+     "nuber of cycles ETMEXTOUT[1] signal was asserted"},
+    {0x22, CTR0 | CTR1, "ETMEXTOUT_BOTH",
+     "nuber of cycles both ETMEXTOUT [0] and [1] were asserted * 2"},
+    {0xff, CTR0 | CTR1 | CTR2, "CPU_CYCLES",
+     "clock cycles counter"},
+
+#else
+    /* ARM V7 events */
+    /* events from file events/arm/armv7/events */
+    {0x00, CTR1 | CTR2 | CTR3 | CTR4, "PMNC_SW_INCR",
+     "Software increment of PMNC registers"},
+    {0x01, CTR1 | CTR2 | CTR3 | CTR4, "IFETCH_MISS",
+     "Instruction fetch misses from cache or normal cacheable memory"},
+    {0x02, CTR1 | CTR2 | CTR3 | CTR4, "ITLB_MISS",
+     "Instruction fetch misses from TLB"},
+    {0x03, CTR1 | CTR2 | CTR3 | CTR4, "DCACHE_REFILL",
+     "Data R/W operation that causes a refill from cache or normal cacheable memory"},
+    {0x04, CTR1 | CTR2 | CTR3 | CTR4, "DCACHE_ACCESS",
+     "Data R/W from cache"},
+    {0x05, CTR1 | CTR2 | CTR3 | CTR4, "DTLB_REFILL",
+     "Data R/W that causes a TLB refill"},
+    {0x06, CTR1 | CTR2 | CTR3 | CTR4, "DREAD",
+     "Data read architecturally executed (note: architecturally executed = for"
+     " instructions that are unconditional or that pass the condition code)"},
+    {0x07, CTR1 | CTR2 | CTR3 | CTR4, "DWRITE",
+     "Data write architecturally executed"},
+    {0x08, CTR1 | CTR2 | CTR3 | CTR4, "INSTR_EXECUTED",
+     "All executed instructions"},
+    {0x09, CTR1 | CTR2 | CTR3 | CTR4, "EXC_TAKEN",
+     "Exception taken"},
+    {0x0A, CTR1 | CTR2 | CTR3 | CTR4, "EXC_EXECUTED",
+     "Exception return architecturally executed"},
+    {0x0B, CTR1 | CTR2 | CTR3 | CTR4, "CID_WRITE",
+     "Instruction that writes to the Context ID Register architecturally executed"},
+    {0x0C, CTR1 | CTR2 | CTR3 | CTR4, "PC_WRITE",
+     "SW change of PC, architecturally executed (not by exceptions)"},
+    {0x0D, CTR1 | CTR2 | CTR3 | CTR4, "PC_IMM_BRANCH",
+     "Immediate branch instruction executed (taken or not)"},
+    {0x0E, CTR1 | CTR2 | CTR3 | CTR4, "PC_PROC_RETURN",
+     "Procedure return architecturally executed (not by exceptions)"},
+    {0x0F, CTR1 | CTR2 | CTR3 | CTR4, "UNALIGNED_ACCESS",
+     "Unaligned access architecturally executed"},
+    {0x10, CTR1 | CTR2 | CTR3 | CTR4, "PC_BRANCH_MIS_PRED",
+     "Branch mispredicted or not predicted. Counts pipeline flushes because of misprediction"},
+    {0x12, CTR1 | CTR2 | CTR3 | CTR4, "PC_BRANCH_MIS_USED",
+     "Branch or change in program flow that could have been predicted"},
+    {0x40, CTR1 | CTR2 | CTR3 | CTR4, "WRITE_BUFFER_FULL",
+     "Any write buffer full cycle"},
+    {0x41, CTR1 | CTR2 | CTR3 | CTR4, "L2_STORE_MERGED",
+     "Any store that is merged in L2 cache"},
+    {0x42, CTR1 | CTR2 | CTR3 | CTR4, "L2_STORE_BUFF",
+     "Any bufferable store from load/store to L2 cache"},
+    {0x43, CTR1 | CTR2 | CTR3 | CTR4, "L2_ACCESS",
+     "Any access to L2 cache"},
+    {0x44, CTR1 | CTR2 | CTR3 | CTR4, "L2_CACH_MISS",
+     "Any cacheable miss in L2 cache"},
+    {0x45, CTR1 | CTR2 | CTR3 | CTR4, "AXI_READ_CYCLES",
+     "Number of cycles for an active AXI read"},
+    {0x46, CTR1 | CTR2 | CTR3 | CTR4, "AXI_WRITE_CYCLES",
+     "Number of cycles for an active AXI write"},
+    {0x47, CTR1 | CTR2 | CTR3 | CTR4, "MEMORY_REPLAY",
+     "Any replay event in the memory subsystem"},
+    {0x48, CTR1 | CTR2 | CTR3 | CTR4, "UNALIGNED_ACCESS_REPLAY",
+     "Unaligned access that causes a replay"},
+    {0x49, CTR1 | CTR2 | CTR3 | CTR4, "L1_DATA_MISS",
+     "L1 data cache miss as a result of the hashing algorithm"},
+    {0x4A, CTR1 | CTR2 | CTR3 | CTR4, "L1_INST_MISS",
+     "L1 instruction cache miss as a result of the hashing algorithm"},
+    {0x4B, CTR1 | CTR2 | CTR3 | CTR4, "L1_DATA_COLORING",
+     "L1 data access in which a page coloring alias occurs"},
+    {0x4C, CTR1 | CTR2 | CTR3 | CTR4, "L1_NEON_DATA",
+     "NEON data access that hits L1 cache"},
+    {0x4D, CTR1 | CTR2 | CTR3 | CTR4, "L1_NEON_CACH_DATA",
+     "NEON cacheable data access that hits L1 cache"},
+    {0x4E, CTR1 | CTR2 | CTR3 | CTR4, "L2_NEON",
+     "L2 access as a result of NEON memory access"},
+    {0x4F, CTR1 | CTR2 | CTR3 | CTR4, "L2_NEON_HIT",
+     "Any NEON hit in L2 cache"},
+    {0x50, CTR1 | CTR2 | CTR3 | CTR4, "L1_INST",
+     "Any L1 instruction cache access, excluding CP15 cache accesses"},
+    {0x51, CTR1 | CTR2 | CTR3 | CTR4, "PC_RETURN_MIS_PRED",
+     "Return stack misprediction at return stack pop (incorrect target address)"},
+    {0x52, CTR1 | CTR2 | CTR3 | CTR4, "PC_BRANCH_FAILED",
+     "Branch prediction misprediction"},
+    {0x53, CTR1 | CTR2 | CTR3 | CTR4, "PC_BRANCH_TAKEN",
+     "Any predicted branch that is taken"},
+    {0x54, CTR1 | CTR2 | CTR3 | CTR4, "PC_BRANCH_EXECUTED",
+     "Any taken branch that is executed"},
+    {0x55, CTR1 | CTR2 | CTR3 | CTR4, "OP_EXECUTED",
+     "Number of operations executed (in instruction or mutli-cycle instruction)"},
+    {0x56, CTR1 | CTR2 | CTR3 | CTR4, "CYCLES_INST_STALL",
+     "Cycles where no instruction available"},
+    {0x57, CTR1 | CTR2 | CTR3 | CTR4, "CYCLES_INST",
+     "Number of instructions issued in a cycle"},
+    {0x58, CTR1 | CTR2 | CTR3 | CTR4, "CYCLES_NEON_DATA_STALL",
+     "Number of cycles the processor waits on MRC data from NEON"},
+    {0x59, CTR1 | CTR2 | CTR3 | CTR4, "CYCLES_NEON_INST_STALL",
+     "Number of cycles the processor waits on NEON instruction queue or NEON load queue"},
+    {0x5A, CTR1 | CTR2 | CTR3 | CTR4, "NEON_CYCLES",
+     "Number of cycles NEON and integer processors are not idle"},
+    {0x70, CTR1 | CTR2 | CTR3 | CTR4, "PMU0_EVENTS",
+     "Number of events from external input source PMUEXTIN[0]"},
+    {0x71, CTR1 | CTR2 | CTR3 | CTR4, "PMU1_EVENTS",
+     "Number of events from external input source PMUEXTIN[1]"},
+    {0x72, CTR1 | CTR2 | CTR3 | CTR4, "PMU_EVENTS",
+     "Number of events from both external input sources PMUEXTIN[0] and PMUEXTIN[1]"},
+    {0xFF, CTR0, "CPU_CYCLES",
+     "Number of CPU cycles"},
+
+#endif // defined(WITH_ARM_V7_A)
+};
+
+#endif // if defined(__arm__)
+
+
+
+
+#if defined (__mips__)
+
+#define MAX_EVENTS 2
+int min_count[MAX_EVENTS] = {15000, 20000};
+const char *default_event = "CYCLES";
+
+struct event_info event_info[] = {
+    /* events from file events/mips/24K/events */
+    {0x0, CTR0 | CTR1, "CYCLES",
+     "Cycles"},
+    {0x1, CTR0 | CTR1, "INSTRUCTIONS",
+     "Instructions completed"},
+    {0x11, CTR0 | CTR1, "DCACHE_MISS",
+     "Data cache misses"},
+    {0x22, CTR0 | CTR1, "L2_MISSES",
+     "L2 cache misses"},
+    {0x2, CTR0, "BRANCHES_LAUNCHED",
+     "Branch instructions launched (whether completed or mispredicted)"},
+    {0x3, CTR0, "JR_31_LAUNCHED",
+     "jr r31 (return) instructions launched (whether completed or mispredicted)"},
+    {0x4, CTR0, "JR_NON_31_LAUNCHED",
+     "jr (not r31) issues, which cost the same as a mispredict."},
+    {0x5, CTR0, "ITLB_ACCESSES",
+     "Instruction micro-TLB accesses"},
+    {0x6, CTR0, "DTLB_ACCESSES",
+     "Data micro-TLB accesses"},
+    {0x7, CTR0, "JTLB_DATA_ACCESSES",
+     "Joint TLB instruction accesses"},
+    {0x8, CTR0, "JTLB_INSTRUCTION_ACCESSES",
+     "Joint TLB data (non-instruction) accesses"},
+    {0x9, CTR0, "INSTRUCTION_CACHE_ACCESSES",
+     "Instruction cache accesses"},
+    {0xa, CTR0, "DCACHE_ACCESSES",
+     "Data cache accesses"},
+    {0xe, CTR0, "INTEGER_INSNS_COMPLETED",
+     "Integer instructions completed"},
+    {0xf, CTR0, "LOADS_COMPLETED",
+     "Loads completed (including FP)"},
+    {0x10, CTR0, "J_JAL_INSNS_COMPLETED",
+     "j/jal instructions completed"},
+    {0x11, CTR0, "NOPS_COMPLETED",
+     "no-ops completed, ie instructions writing $0"},
+    {0x12, CTR0, "STALLS",
+     "Stalls"},
+    {0x13, CTR0, "SC_COMPLETED",
+     "sc instructions completed"},
+    {0x14, CTR0, "PREFETCH_COMPLETED",
+     "Prefetch instructions completed"},
+    {0x15, CTR0, "SCACHE_WRITEBACKS",
+     "L2 cache writebacks"},
+    {0x17, CTR0, "EXCEPTIONS_TAKEN",
+     "Exceptions taken"},
+    {0x18, CTR0, "CACHE_FIXUPS",
+     "``cache fixup'' events (specific to the 24K family microarchitecture)."},
+    {0x2, CTR1, "BRANCH_MISSPREDICTS",
+     "Branch mispredictions"},
+    {0x3, CTR1, "JR_31_MISSPREDICTS",
+     "jr r31 (return) mispredictions"},
+    {0x5, CTR1, "ITLB_MISSES",
+     "Instruction micro-TLB misses"},
+    {0x6, CTR1, "DTLB_MISSES",
+     "Data micro-TLB misses"},
+    {0x7, CTR1, "JTLB_INSN_MISSES",
+     "Joint TLB instruction misses"},
+    {0x8, CTR1, "JTLB_DATA_MISSES",
+     "Joint TLB data (non-instruction) misses"},
+    {0x9, CTR1, "ICACHE_MISSES",
+     "Instruction cache misses"},
+    {0xa, CTR1, "DCACHE_WRITEBACKS",
+     "Data cache writebacks"},
+    {0xe, CTR1, "FPU_INSNS_NON_LOAD_STORE_COMPLETED",
+     "FPU instructions completed (not including loads/stores)"},
+    {0xf, CTR1, "STORES_COMPLETED",
+     "Stores completed (including FP)"},
+    {0x10, CTR1, "MIPS16_INSTRUCTIONS_COMPLETED",
+     "MIPS16 instructions completed"},
+    {0x11, CTR1, "INTEGER_MUL_DIV_COMPLETED",
+     "integer multiply/divide unit instructions completed"},
+    {0x12, CTR1, "REPLAY_TRAPS_NOT_UTLB",
+     "``replay traps'' (other than micro-TLB related)"},
+    {0x13, CTR1, "SC_COMPLETE_BUT_FAILED",
+     "sc instructions completed, but store failed (because the link bit had been cleared)."},
+    {0x14, CTR1, "SUPERFLUOUS_INSTRUCTIONS",
+     "``superfluous'' prefetch instructions (data was already in cache)."},
+    {0x15, CTR1, "SCACHE_ACCESSES",
+     "L2 cache accesses"},
+};
+#endif // if defined (__mips__)
+
+
 
 int list_events; 
 int show_usage;
@@ -56,6 +329,7 @@ int num_events;
 int start;
 int stop;
 int reset;
+int timer_mode;
 
 int selected_events[MAX_EVENTS];
 int selected_counts[MAX_EVENTS];
@@ -79,159 +353,6 @@ struct option long_options[] = {
     {0, 0, 0, 0},
 };
 
-struct event_info {
-    int id;
-    const char *name;
-    const char *explanation;
-} event_info[] = {
-#if !defined(WITH_ARM_V7_A)
-    /* ARM V6 events */
-    {0x00, "IFU_IFETCH_MISS", 
-     "number of instruction fetch misses"},
-    {0x01, "CYCLES_IFU_MEM_STALL", 
-     "cycles instruction fetch pipe is stalled"},
-    {0x02, "CYCLES_DATA_STALL", 
-     "cycles stall occurs for due to data dependency"},
-    {0x03, "ITLB_MISS", 
-     "number of Instruction MicroTLB misses"},
-    {0x04, "DTLB_MISS", 
-     "number of Data MicroTLB misses"},
-    {0x05, "BR_INST_EXECUTED", 
-     "branch instruction executed w/ or w/o program flow change"},
-    {0x06, "BR_INST_MISS_PRED", 
-     "branch mispredicted"},
-    {0x07, "INSN_EXECUTED", 
-     "instructions executed"},
-    {0x09, "DCACHE_ACCESS", 
-     "data cache access, cacheable locations"},
-    {0x0a, "DCACHE_ACCESS_ALL", 
-     "data cache access, all locations"},
-    {0x0b, "DCACHE_MISS", 
-     "data cache miss"},
-    {0x0c, "DCACHE_WB", 
-     "data cache writeback, 1 event for every half cacheline"},
-    {0x0d, "PC_CHANGE", 
-     "number of times the program counter was changed without a mode switch"},
-    {0x0f, "TLB_MISS", 
-     "Main TLB miss"},
-    {0x10, "EXP_EXTERNAL", 
-     "Explicit external data access"},
-    {0x11, "LSU_STALL", 
-     "cycles stalled because Load Store request queue is full"},
-    {0x12, "WRITE_DRAIN", 
-     "Times write buffer was drained"},
-    {0xff, "CPU_CYCLES", 
-     "clock cycles counter"}, 
-#else
-    /* ARM V7 events */
-    {0x00, "PMNC_SW_INCR",
-     "Software increment of PMNC registers"},
-    {0x01, "IFETCH_MISS",
-     "Instruction fetch misses from cache or normal cacheable memory"},
-    {0x02, "ITLB_MISS",
-     "Instruction fetch misses from TLB"},
-    {0x03, "DCACHE_REFILL",
-     "Data R/W operation that causes a refill from cache or normal cacheable"
-     "memory"},
-    {0x04, "DCACHE_ACCESS",
-     "Data R/W from cache"},
-    {0x05, "DTLB_REFILL",
-     "Data R/W that causes a TLB refill"},
-    {0x06, "DREAD",
-     "Data read architecturally executed (note: architecturally executed = for"
-     "instructions that are unconditional or that pass the condition code)"},
-    {0x07, "DWRITE",
-     "Data write architecturally executed"},
-    {0x08, "INSTR_EXECUTED",
-     "All executed instructions"},
-    {0x09, "EXC_TAKEN",
-     "Exception taken"},
-    {0x0A, "EXC_EXECUTED",
-     "Exception return architecturally executed"},
-    {0x0B, "CID_WRITE",
-     "Instruction that writes to the Context ID Register architecturally"
-     "executed"},
-    {0x0C, "PC_WRITE",
-     "SW change of PC, architecturally executed (not by exceptions)"},
-    {0x0D, "PC_IMM_BRANCH",
-     "Immediate branch instruction executed (taken or not)"},
-    {0x0E, "PC_PROC_RETURN",
-     "Procedure return architecturally executed (not by exceptions)"},
-    {0x0F, "UNALIGNED_ACCESS",
-     "Unaligned access architecturally executed"},
-    {0x10, "PC_BRANCH_MIS_PRED",
-     "Branch mispredicted or not predicted. Counts pipeline flushes because of"
-     "misprediction"},
-    {0x12, "PC_BRANCH_MIS_USED",
-    "Branch or change in program flow that could have been predicted"},
-    {0x40, "WRITE_BUFFER_FULL",
-     "Any write buffer full cycle"},
-    {0x41, "L2_STORE_MERGED",
-     "Any store that is merged in L2 cache"},
-    {0x42, "L2_STORE_BUFF",
-     "Any bufferable store from load/store to L2 cache"},
-    {0x43, "L2_ACCESS",
-     "Any access to L2 cache"},
-    {0x44, "L2_CACH_MISS",
-     "Any cacheable miss in L2 cache"},
-    {0x45, "AXI_READ_CYCLES",
-     "Number of cycles for an active AXI read"},
-    {0x46, "AXI_WRITE_CYCLES",
-     "Number of cycles for an active AXI write"},
-    {0x47, "MEMORY_REPLAY",
-     "Any replay event in the memory subsystem"},
-    {0x48, "UNALIGNED_ACCESS_REPLAY",
-     "Unaligned access that causes a replay"},
-    {0x49, "L1_DATA_MISS",
-     "L1 data cache miss as a result of the hashing algorithm"},
-    {0x4A, "L1_INST_MISS",
-     "L1 instruction cache miss as a result of the hashing algorithm"},
-    {0x4B, "L1_DATA_COLORING",
-     "L1 data access in which a page coloring alias occurs"},
-    {0x4C, "L1_NEON_DATA",
-     "NEON data access that hits L1 cache"},
-    {0x4D, "L1_NEON_CACH_DATA",
-     "NEON cacheable data access that hits L1 cache"},
-    {0x4E, "L2_NEON",
-     "L2 access as a result of NEON memory access"},
-    {0x4F, "L2_NEON_HIT",
-     "Any NEON hit in L2 cache"},
-    {0x50, "L1_INST",
-     "Any L1 instruction cache access, excluding CP15 cache accesses"},
-    {0x51, "PC_RETURN_MIS_PRED",
-     "Return stack misprediction at return stack pop"
-     "(incorrect target address)"},
-    {0x52, "PC_BRANCH_FAILED",
-     "Branch prediction misprediction"},
-    {0x53, "PC_BRANCH_TAKEN",
-     "Any predicted branch that is taken"},
-    {0x54, "PC_BRANCH_EXECUTED",
-     "Any taken branch that is executed"},
-    {0x55, "OP_EXECUTED",
-     "Number of operations executed"
-     "(in instruction or mutli-cycle instruction)"},
-    {0x56, "CYCLES_INST_STALL",
-     "Cycles where no instruction available"},
-    {0x57, "CYCLES_INST",
-     "Number of instructions issued in a cycle"},
-    {0x58, "CYCLES_NEON_DATA_STALL",
-     "Number of cycles the processor waits on MRC data from NEON"},
-    {0x59, "CYCLES_NEON_INST_STALL",
-     "Number of cycles the processor waits on NEON instruction queue or"
-     "NEON load queue"},
-    {0x5A, "NEON_CYCLES",
-     "Number of cycles NEON and integer processors are not idle"},
-    {0x70, "PMU0_EVENTS",
-     "Number of events from external input source PMUEXTIN[0]"},
-    {0x71, "PMU1_EVENTS",
-     "Number of events from external input source PMUEXTIN[1]"},
-    {0x72, "PMU_EVENTS",
-     "Number of events from both external input sources PMUEXTIN[0]"
-     "and PMUEXTIN[1]"},
-    {0xFF, "CPU_CYCLES",
-     "Number of CPU cycles"},
-#endif
-};
 
 void usage()
 {
@@ -262,8 +383,8 @@ void setup_session_dir()
 
     fd = open(OP_DATA_DIR, O_RDONLY);
     if (fd != -1) {
-        system("rm -r "OP_DATA_DIR);
         close(fd);
+        system("rm -r "OP_DATA_DIR);
     }
 
     if (mkdir(OP_DATA_DIR, 755)) {
@@ -276,32 +397,73 @@ void setup_session_dir()
     }
 }
 
+
+void umount_op_device()
+{
+    if (system("umount "OP_DRIVER_BASE)) {
+        fprintf(stderr, "Cannot umount device fs \"%s\": %s \n", 
+                OP_DRIVER_BASE, strerror(errno));
+    }
+    /* rm mount point, so next do_setup() won't fail */
+    if (rmdir(OP_DRIVER_BASE)) {
+        fprintf(stderr, "Cannot remove mount point: "OP_DRIVER_BASE": %s\n",
+                strerror(errno));
+    }
+}
+
 int do_setup()
 {
     char dir[1024];
 
     setup_session_dir();
 
-    if (mkdir(OP_DRIVER_BASE, 644)) {
-        fprintf(stderr, "Cannot create directory "OP_DRIVER_BASE": %s\n",
-                strerror(errno));
-        return -1;
+    /* create the dev mountpoint if it does not already exist */
+    int fd = open(OP_DRIVER_BASE, O_RDONLY);
+    if (fd == -1) {
+        if (mkdir(OP_DRIVER_BASE, 644)) {
+            fprintf(stderr, "Cannot create directory "OP_DRIVER_BASE": %s\n",
+                    strerror(errno));
+            return -1;
+        }
+    
+    } else {
+        close(fd);
     }
+    
     if (system("mount -t oprofilefs nodev "OP_DRIVER_BASE)) {
         return -1;
     }
     return 0;
 }
 
+
+void stringify_counters(char *ctr_string, int ctr_mask)
+{
+    int i, n, len;
+    char *p = ctr_string;
+    
+    *p = '\0';
+    for (i=0; i<32; ++i) {
+        if (ctr_mask & (1<<i)) {
+            p += sprintf(p, "%d,", i);
+        }
+    }
+    if (p != ctr_string) {
+        *(p-1) = '\0';  /* erase the final comma */
+    }
+}
+
 void do_list_events()
 {
     unsigned int i;
+    char ctrs[128];
 
-    printf("%-20s: %s\n", "name", "meaning");
+    printf("%-12s | %-30s: %s\n", "counter", "name", "meaning");
     printf("----------------------------------------"
            "--------------------------------------\n");
     for (i = 0; i < sizeof(event_info)/sizeof(struct event_info); i++) {
-        printf("%-20s: %s\n", event_info[i].name, event_info[i].explanation);
+        stringify_counters(ctrs, event_info[i].valid_ctr_mask);
+        printf("%-12s | %-30s: %s\n", ctrs, event_info[i].name, event_info[i].explanation);
     }
 }
 
@@ -317,16 +479,16 @@ int find_event_idx_from_name(const char *name)
     return -1;
 }
 
-const char * find_event_name_from_id(int id)
+const char * find_event_name_from_id(int id, int ctr_mask)
 {
     unsigned int i;
 
     for (i = 0; i < sizeof(event_info)/sizeof(struct event_info); i++) {
-        if (event_info[i].id == id) {
+        if (event_info[i].id == id && event_info[i].valid_ctr_mask & ctr_mask) {
             return event_info[i].name;
         }
     }
-    return NULL;
+    return "Undefined Event";
 }
 
 int process_event(const char *event_spec)
@@ -339,6 +501,13 @@ int process_event(const char *event_spec)
 
     strncpy(event_name, event_spec, 512);
     count_name[0] = 0;
+    
+    if (strcmp(event_name, "timer") == 0) {
+        /* using timer mode for cpus without performance counters */
+        timer_mode = 1;
+        verbose("Using oprofile timer mode\n");
+        return 0;
+    }
 
     /* First, check if the name is followed by ":" */
     for (i = 0; i < strlen(event_name); i++) {
@@ -354,6 +523,18 @@ int process_event(const char *event_spec)
     event_idx = find_event_idx_from_name(event_name);
     if (event_idx == -1) {
         fprintf(stderr, "Unknown event name: %s\n", event_name);
+        return -1;
+    }
+    
+    /* validate that the named event is valid for this event counter */
+    /* some arch's don't support all named events on all counters */
+    /* 'num_events' represents the cpu internal counter number */
+    verbose("idx: %d, name: %s, valid_ctr: %02x, ctr#: %d\n", 
+            event_idx, event_info[event_idx].name, 
+            event_info[event_idx].valid_ctr_mask, num_events);
+    if ( ! (1<<num_events & event_info[event_idx].valid_ctr_mask) ) {
+        fprintf(stderr, "Bad event name: %s for counter %d, see --list\n", 
+                event_name, num_events);
         return -1;
     }
 
@@ -427,7 +608,7 @@ void do_status()
             /* event name */
             sprintf(fullname, OP_DRIVER_BASE"/%d/event", i);
             num = read_num(fullname);
-            printf("    name: %s\n", find_event_name_from_id(num));
+            printf("    name: %s\n", find_event_name_from_id(num, (1<<i)));
 
             /* profile interval */
             sprintf(fullname, OP_DRIVER_BASE"/%d/count", i);
@@ -476,7 +657,11 @@ void do_status()
 void do_reset() 
 {
     int fd;
-
+    
+    int pid = read_num(OP_DATA_DIR"/lock");
+    if (pid >= 0) {
+        kill(pid, SIGHUP);  /* HUP makes oprofiled close its sample files */
+    }
     fd = open(OP_DATA_DIR"/samples/current", O_RDONLY);
     if (fd == -1) {
         return;
@@ -526,8 +711,9 @@ int main(int argc, char * const argv[])
                 int pid = read_num(OP_DATA_DIR"/lock");
                 if (pid >= 0) {
                     kill(pid, SIGKILL);
-                }   
-                setup_session_dir();
+                }
+                sleep(1);
+                umount_op_device();
                 break;
             }
             /* --status */
@@ -547,7 +733,7 @@ int main(int argc, char * const argv[])
     }
 
     if (quick) {
-        process_event("CPU_CYCLES");
+        process_event(default_event);
         setup = 1;
     }
 
@@ -566,12 +752,12 @@ int main(int argc, char * const argv[])
         }
     }
 
-    if (num_events != 0) {
+    if (num_events != 0  ||  timer_mode) {
         int i;
 
         strcpy(command, "oprofiled --session-dir="OP_DATA_DIR);
 
-#if !defined(WITH_ARM_V7_A)
+#if defined(__arm__) && !defined(WITH_ARM_V7_A)
         /* Since counter #3 can only handle CPU_CYCLES, check and shuffle the 
          * order a bit so that the maximal number of events can be profiled
          * simultaneously
@@ -606,6 +792,10 @@ int main(int argc, char * const argv[])
         }
 #endif
 
+        if (timer_mode) {
+            snprintf(command+strlen(command), 1024 - strlen(command), 
+                     " --events=");
+        }
 
         /* Configure the counters and enable them */
         for (i = 0; i < num_events; i++) {
@@ -646,8 +836,10 @@ int main(int argc, char * const argv[])
         }
 
         /* Disable the unused counters */
-        for (i = num_events; i < MAX_EVENTS; i++) {
-            echo_dev("0", 0, "enabled", i);
+        if (!timer_mode) {
+            for (i = num_events; i < MAX_EVENTS; i++) {
+                echo_dev("0", 0, "enabled", i);
+            }
         }
 
         snprintf(command+strlen(command), 1024 - strlen(command), " %s",
