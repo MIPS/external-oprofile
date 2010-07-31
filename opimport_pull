@@ -65,6 +65,8 @@ except:
 # get the samples off the phone
 result = os.system("adb%s pull /data/oprofile/samples %s/raw_samples "
                    "> /dev/null 2>&1" % (device, output_dir))
+result += os.system("adb%s pull /data/oprofile/abi %s/abi "
+                   "> /dev/null 2>&1" % (device, output_dir))
 if result != 0:
     print "adb%s pull failure, exiting" % device
     sys.exit(1)
@@ -113,8 +115,7 @@ for line in stream:
         os.makedirs(dir)
 
     cmd = oprofile_event_dir + arch_path + "/bin/opimport -a " + \
-          oprofile_event_dir + \
-          "/abi/arm_abi -o samples" + middle_part + "/" + file_name + " " + line
+          "./abi -o samples" + middle_part + "/" + file_name + " " + line
     os.system(cmd)
 
 stream.close()
