@@ -258,38 +258,45 @@ void usage()
 
 void setup_session_dir()
 {
-    int fd;
-
-    fd = open(OP_DATA_DIR, O_RDONLY);
-    if (fd != -1) {
+    if (access(OP_DATA_DIR, F_OK) == 0)
         system("rm -r "OP_DATA_DIR);
-        close(fd);
-    }
 
-    if (mkdir(OP_DATA_DIR, 755)) {
+    if (mkdir(OP_DATA_DIR, 0755)) {
         fprintf(stderr, "Cannot create directory \"%s\": %s\n",
                 OP_DATA_DIR, strerror(errno));
     }
-    if (mkdir(OP_DATA_DIR"/samples", 644)) {
+    if (mkdir(OP_DATA_DIR"/samples", 0644)) {
         fprintf(stderr, "Cannot create directory \"%s\": %s\n",
                 OP_DATA_DIR"/samples", strerror(errno));
     }
 }
 
-int do_setup()
-{
-    char dir[1024];
-
-    setup_session_dir();
-
-    if (mkdir(OP_DRIVER_BASE, 644)) {
+void mount_op_device(void) {
+  if (access(OP_DRIVER_BASE "/cpu_type", R_OK) != 0) {
+    if (access(OP_DRIVER_BASE, F_OK) != 0) {
+      if (mkdir(OP_DRIVER_BASE, 0644)) {
         fprintf(stderr, "Cannot create directory "OP_DRIVER_BASE": %s\n",
                 strerror(errno));
-        return -1;
+	exit(1);
+      }
     }
     if (system("mount -t oprofilefs nodev "OP_DRIVER_BASE)) {
-        return -1;
+      fprintf(stderr, "Cannot mount oprofile file system: %s\n",
+	      strerror(errno));
+      exit(1);
     }
+  }
+  if (access(OP_DRIVER_BASE "/cpu_type", R_OK) != 0) {
+    fprintf(stderr, "Cannot access " OP_DRIVER_BASE "/cpu_type: %s\n",
+                strerror(errno));
+    exit(1);
+  }
+}
+
+int do_setup()
+{
+    setup_session_dir();
+
     return 0;
 }
 
@@ -406,6 +413,9 @@ int read_num(const char* file)
     int fd = open(file, O_RDONLY);
     if (fd<0) return -1;
     int rd = read(fd, buffer, sizeof(buffer)-1);
+    close(fd);
+    if (rd < 0)
+      return -1;
     buffer[rd] = 0;
     return atoi(buffer);
 }
@@ -444,14 +454,12 @@ void do_status()
         int fd;
         /* Still needs to check if this lock is left-over */
         sprintf(fullname, "/proc/%d", num);
-        fd = open(fullname, O_RDONLY);
-        if (fd == -1) {
+        if (access(fullname, R_OK) != 0) {
             printf("Session directory is not clean - do \"opcontrol --setup\""
                    " before you continue\n");
             return;
         }
         else {
-            close(fd);
             printf("oprofiled pid: %d\n", num);
             num = read_num(OP_DRIVER_BASE"/enable");
             printf("profiler is%s running\n", num == 0 ? " not" : "");
@@ -475,14 +483,19 @@ void do_status()
 
 void do_reset() 
 {
-    int fd;
+    int pid = read_num(OP_DATA_DIR"/lock");
+    if (pid >= 0)
+        kill(pid, SIGHUP);  /* HUP makes oprofiled close its sample files */
 
-    fd = open(OP_DATA_DIR"/samples/current", O_RDONLY);
-    if (fd == -1) {
-        return;
-    }
-    close(fd);
-    system("rm -r "OP_DATA_DIR"/samples/current");
+    if (access(OP_DATA_DIR"/samples/current", R_OK) == 0)
+      system("rm -r "OP_DATA_DIR"/samples/current");
+}
+
+void do_shutdown(void)
+{
+    int pid = read_num(OP_DATA_DIR"/lock");
+    if (pid >= 0)
+	    kill(pid, SIGKILL);
 }
 
 int main(int argc, char * const argv[])
@@ -493,6 +506,8 @@ int main(int argc, char * const argv[])
     /* Initialize default strings */
     strcpy(vmlinux, "--no-vmlinux");
     strcpy(kernel_range, "");
+
+    mount_op_device();
 
     while (1) {
         int c = getopt_long(argc, argv, "", long_options, &option_index);
@@ -523,11 +538,7 @@ int main(int argc, char * const argv[])
                 break;
             /* --shutdown */
             case 'h': {
-                int pid = read_num(OP_DATA_DIR"/lock");
-                if (pid >= 0) {
-                    kill(pid, SIGKILL);
-                }   
-                setup_session_dir();
+                do_shutdown();
                 break;
             }
             /* --status */
@@ -568,6 +579,8 @@ int main(int argc, char * const argv[])
 
     if (num_events != 0) {
         int i;
+
+        do_shutdown();		/* shutdown daemon if it is running */
 
         strcpy(command, "oprofiled --session-dir="OP_DATA_DIR);
 
