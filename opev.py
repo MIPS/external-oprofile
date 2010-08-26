@@ -45,7 +45,7 @@ def parse_ctr(s):
     return c
 
 def ev(fname,ovf):
-    ''' read file, parse, generate C data struct to std out '''
+    ''' read file, parse, generate C data struct to file ovf '''
     evf = open(fname, "r")
     all_lines = evf.readlines()
     lines = [s.strip() for s in all_lines if s.strip()]     # strip blanks

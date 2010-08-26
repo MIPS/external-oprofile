@@ -1,4 +1,4 @@
-// events from file mips/24K/events
+// events from file events/mips/24K/events
     {0x0, CTR(0) | CTR(1), "CYCLES",
      "0-0 Cycles"},
     {0x1, CTR(0) | CTR(1), "INSTRUCTIONS",
@@ -169,13 +169,13 @@
      "49-1 EJTAG Data triggerpoints"},
     {0x432, CTR(1), "FSB_25_50_FULL",
      "50-1 FSB 25-50% full"},
-    {0x433, CTR(1), "FSB_FULL_PIPE_STALLS",
+    {0x433, CTR(1), "FSB_FULL_STALLS",
      "51-1 FSB full pipeline stall cycles"},
     {0x434, CTR(1), "LDQ_25_50_FULL",
      "52-1 LDQ 25-50% full"},
-    {0x435, CTR(1), "LDQ_FULL_PIPE_STALLS",
+    {0x435, CTR(1), "LDQ_FULL_STALLS",
      "53-1 LDQ full pipeline stall cycles"},
     {0x436, CTR(1), "WBB_25_50_FULL",
      "54-1 WBB 25-50% full"},
-    {0x437, CTR(1), "WBB_FULL_PIPE_STALLS",
+    {0x437, CTR(1), "WBB_FULL_STALLS",
      "55-1 WBB full pipeline stall cycles"},

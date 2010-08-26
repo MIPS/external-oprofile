@@ -1036,6 +1036,14 @@ void op_default_event(op_cpu cpu_type, struct op_default_event_descr * descr)
 			descr->name = "INSTRUCTIONS";
 			break;
 
+	        case CPU_MIPS_74K:
+	                descr->name = "INSTRUCTIONS";
+	                break;
+
+	        case CPU_MIPS_1004K:
+	                descr->name = "INSTRUCTIONS";
+	                break;
+
 		case CPU_MIPS_5K:
 		case CPU_MIPS_25K:
 			descr->name = "CYCLES";
