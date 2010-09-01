@@ -130,6 +130,7 @@ int reset;
 
 int selected_events[MAX_EVENTS];
 int selected_counts[MAX_EVENTS];
+int max_events;
 
 char kernel_range[512];
 char vmlinux[512];
@@ -190,6 +191,8 @@ void setup_session_dir()
 }
 
 void mount_op_device(void) {
+  char buf[512];
+
   if (access(OP_DRIVER_BASE "/cpu_type", R_OK) != 0) {
     if (access(OP_DRIVER_BASE, F_OK) != 0) {
       if (mkdir(OP_DRIVER_BASE, 0644)) {
@@ -218,23 +221,29 @@ void mount_op_device(void) {
     exit(1);
   }
 
-  char cpu[30];
-  int n = read(fd, cpu, sizeof(cpu)-1);
+  int n = read(fd, buf, sizeof(buf)-1);
   close(fd);
   if (n < 0) {
     fprintf(stderr, OP_DRIVER_BASE "/cpu_type: %s\n",
 	    strerror(errno));
     exit(1);
   }
-  cpu[n] = '\0';
+  buf[n] = '\0';
   for (unsigned int i = 0; i < ARRAYSZ(cpuevents); i++) {
-    if (strcmp(cpu, cpuevents[i].cpu) == 0) {
+    if (strcmp(buf, cpuevents[i].cpu) == 0) {
       cpuevent = &cpuevents[i];
-      return;
     }
   }
-  fprintf(stderr, "Unrecognised CPU type %s\n", cpu);
-  exit(1);
+  if (cpuevent == NULL) {
+    fprintf(stderr, "Unrecognised CPU type %s\n", buf);
+    exit(1);
+  }
+
+  for (max_events = 0; max_events < MAX_EVENTS; max_events++) {
+    snprintf(buf, sizeof(buf), OP_DRIVER_BASE"/%d", max_events);
+    if (access(buf, F_OK) < 0)
+      break;
+  }
 }
 
 int do_setup()
@@ -402,7 +411,7 @@ void do_status()
 
     printf("Driver directory: %s\n", OP_DRIVER_BASE);
     printf("Session directory: %s\n", OP_DATA_DIR);
-    for (i = 0; i < MAX_EVENTS; i++) {
+    for (i = 0; i < max_events; i++) {
         sprintf(fullname, OP_DRIVER_BASE"/%d/enabled", i);
         num = read_num(fullname);
         if (num > 0) {
@@ -493,9 +502,9 @@ int main(int argc, char * const argv[])
                 break;
             /* --event */
             case 'e':   
-                if (num_events == MAX_EVENTS) {
+                if (num_events == max_events) {
                     fprintf(stderr, "More than %d events specified\n",
-                            MAX_EVENTS);
+                            max_events);
                     exit(1);
                 }
                 if (process_event(optarg)) {
@@ -633,7 +642,7 @@ int main(int argc, char * const argv[])
         }
 
         /* Disable the unused counters */
-        for (i = num_events; i < MAX_EVENTS; i++) {
+        for (i = num_events; i < max_events; i++) {
             echo_dev("0", 0, "enabled", i);
         }
 
