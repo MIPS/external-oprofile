@@ -68,6 +68,8 @@ int min_count[MAX_EVENTS] = {150000, 200000, 250000};
 int min_count[MAX_EVENTS] = {150000, 20000, 25000, 30000, 35000};
 #endif
 
+const char *default_event = "CPU_CYCLES";
+
 #endif /* defined(__arm__) */
 
 #if defined(__mips__)
