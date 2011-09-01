@@ -27,26 +27,106 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <dirent.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include "op_config.h"
 
 #define verbose(fmt...) if (verbose_print) printf(fmt)
 
-/* Experiments found that using a small interval may hang the device, and the
- * more events tracked simultaneously, the longer the interval has to be.
- */
+struct event_info {
+    int id;
+    int counters;
+    int um;
+    const char *name;
+    const char *explanation;
+};
+
+#define CTR(n)  (1<<(n))
 
 #if defined(__i386__) || defined(__x86_64__)
+struct event_info event_info_arch_perfmon[] = {
+    #include "../events/i386/arch_perfmon/events.h"
+};
+
 #define MAX_EVENTS 2
 int min_count[MAX_EVENTS] = {60000, 100000};
-#elif !defined(WITH_ARM_V7_A)
+
+const char *default_event = "CPU_CLK_UNHALTED";
+#endif
+
+#if defined(__arm__)
+#if !defined(WITH_ARM_V7_A)
+struct event_info event_info_armv6[] = {
+    #include "../events/arm/armv6/events.h"
+};
+
 #define MAX_EVENTS 3
 int min_count[MAX_EVENTS] = {150000, 200000, 250000};
+
 #else
+struct event_info event_info_armv7[] = {
+    #include "../events/arm/armv7/events.h"
+};
+
 #define MAX_EVENTS 5
 int min_count[MAX_EVENTS] = {150000, 20000, 25000, 30000, 35000};
 #endif
+
+const char *default_event = "CPU_CYCLES";
+#endif
+
+#if defined(__mips__)
+struct event_info event_info_24K[] = {
+    #include "../events/mips/24K/events.h"
+};
+struct event_info event_info_34K[] = {
+    #include "../events/mips/34K/events.h"
+};
+struct event_info event_info_74K[] = {
+    #include "../events/mips/74K/events.h"
+};
+struct event_info event_info_1004K[] = {
+    #include "../events/mips/1004K/events.h"
+};
+
+#define MAX_EVENTS 4
+int min_count[MAX_EVENTS] = {150000, 20000, 25000, 30000};
+
+const char *default_event = "CYCLES";
+#endif /* defined(__mips__) */
+
+#define ARRAYSZ(x) (sizeof(x)/sizeof((x)[0]))
+
+struct cpuevents {
+    const char *cpu;
+    struct event_info *event_info;
+    unsigned int nevents;
+} cpuevents[] = {
+#if defined(__i386__) || defined(__x86_64__)
+    {"i386/arch_perfmon", event_info_arch_perfmon, ARRAYSZ(event_info_arch_perfmon)},
+};
+#endif /* defined(__i386__) || defined(__x86_64__) */
+#if defined(__arm__)
+#if !defined(WITH_ARM_V7_A)
+    {"arm/armv6", event_info_armv6, ARRAYSZ(event_info_armv6)},
+#else
+    {"arm/armv7", event_info_armv7, ARRAYSZ(event_info_armv7)},
+#endif
+#endif /* defined(__arm__) */
+#if defined(__mips__)
+    {"mips/24K", event_info_24K, ARRAYSZ(event_info_24K)},
+    {"mips/34K", event_info_34K, ARRAYSZ(event_info_34K)},
+    {"mips/74K", event_info_74K, ARRAYSZ(event_info_74K)},
+    {"mips/1004K", event_info_1004K, ARRAYSZ(event_info_1004K)},
+#endif /* defined(__mips__) */
+};
+
+struct cpuevents *cpuevent;
+#define event_info cpuevent->event_info
+#define NEVENTS cpuevent->nevents
 
 int verbose_print;
 int list_events; 
@@ -61,6 +141,7 @@ int reset;
 
 int selected_events[MAX_EVENTS];
 int selected_counts[MAX_EVENTS];
+int max_events;
 
 char callgraph[8];
 char kernel_range[512];
@@ -83,208 +164,10 @@ struct option long_options[] = {
     {"shutdown", 0, 0, 'h'},
     {"status", 0, 0, 't'},
     {"verbose", 0, 0, 'V'},
+    {"verbose-log", 1, 0, 'l'},
     {0, 0, 0, 0},
 };
 
-struct event_info {
-    int id;
-    int um;
-    const char *name;
-    const char *explanation;
-} event_info[] = {
-#if defined(__i386__) || defined(__x86_64__)
-    /* INTEL_ARCH_PERFMON events */
-
-    /* 0x3c counters:cpuid um:zero minimum:6000 filter:0 name:CPU_CLK_UNHALTED :
-     * Clock cycles when not halted
-     */
-    {0x3c, 0, "CPU_CLK_UNHALTED",
-     "Clock cycles when not halted" },
-
-    /* event:0x3c counters:cpuid um:one minimum:6000 filter:2 name:UNHALTED_REFERENCE_CYCLES :
-     * Unhalted reference cycles
-     */
-    {0x3c, 1, "UNHALTED_REFERENCE_CYCLES",
-      "Unhalted reference cycles" },
-
-    /* event:0xc0 counters:cpuid um:zero minimum:6000 filter:1 name:INST_RETIRED :
-     * number of instructions retired
-     */
-     {0xc0, 0, "INST_RETIRED",
-       "number of instructions retired"},
-
-    /* event:0x2e counters:cpuid um:x41 minimum:6000 filter:5 name:LLC_MISSES :
-     * Last level cache demand requests from this core that missed the LLC
-     */
-     {0x2e, 0x41, "LLC_MISSES",
-       "Last level cache demand requests from this core that missed the LLC"},
-
-    /* event:0x2e counters:cpuid um:x4f minimum:6000 filter:4 name:LLC_REFS :
-     * Last level cache demand requests from this core
-     */
-     {0x2e, 0x4f, "LLC_REFS",
-      "Last level cache demand requests from this core"},
-
-    /* event:0xc4 counters:cpuid um:zero minimum:500 filter:6 name:BR_INST_RETIRED :
-     * number of branch instructions retired
-     */
-     {0xc4, 0, "BR_INST_RETIRED",
-       "number of branch instructions retired"},
-
-    /* event:0xc5 counters:cpuid um:zero minimum:500 filter:7 name:BR_MISS_PRED_RETIRED :
-     * number of mispredicted branches retired (precise)
-     */
-     {0xc5, 0, "BR_MISS_PRED_RETIRED",
-       "number of mispredicted branches retired (precise)"},
-
-#elif !defined(WITH_ARM_V7_A)
-    /* ARM V6 events */
-    {0x00, 0, "IFU_IFETCH_MISS", 
-     "number of instruction fetch misses"},
-    {0x01, 0, "CYCLES_IFU_MEM_STALL", 
-     "cycles instruction fetch pipe is stalled"},
-    {0x02, 0, "CYCLES_DATA_STALL", 
-     "cycles stall occurs for due to data dependency"},
-    {0x03, 0, "ITLB_MISS", 
-     "number of Instruction MicroTLB misses"},
-    {0x04, 0, "DTLB_MISS", 
-     "number of Data MicroTLB misses"},
-    {0x05, 0, "BR_INST_EXECUTED", 
-     "branch instruction executed w/ or w/o program flow change"},
-    {0x06, 0, "BR_INST_MISS_PRED", 
-     "branch mispredicted"},
-    {0x07, 0, "INSN_EXECUTED", 
-     "instructions executed"},
-    {0x09, 0, "DCACHE_ACCESS", 
-     "data cache access, cacheable locations"},
-    {0x0a, 0, "DCACHE_ACCESS_ALL", 
-     "data cache access, all locations"},
-    {0x0b, 0, "DCACHE_MISS", 
-     "data cache miss"},
-    {0x0c, 0, "DCACHE_WB", 
-     "data cache writeback, 1 event for every half cacheline"},
-    {0x0d, 0, "PC_CHANGE", 
-     "number of times the program counter was changed without a mode switch"},
-    {0x0f, 0, "TLB_MISS", 
-     "Main TLB miss"},
-    {0x10, 0, "EXP_EXTERNAL", 
-     "Explicit external data access"},
-    {0x11, 0, "LSU_STALL", 
-     "cycles stalled because Load Store request queue is full"},
-    {0x12, 0, "WRITE_DRAIN", 
-     "Times write buffer was drained"},
-    {0xff, 0, "CPU_CYCLES", 
-     "clock cycles counter"}, 
-#else
-    /* ARM V7 events */
-    {0x00, 0, "PMNC_SW_INCR",
-     "Software increment of PMNC registers"},
-    {0x01, 0, "IFETCH_MISS",
-     "Instruction fetch misses from cache or normal cacheable memory"},
-    {0x02, 0, "ITLB_MISS",
-     "Instruction fetch misses from TLB"},
-    {0x03, 0, "DCACHE_REFILL",
-     "Data R/W operation that causes a refill from cache or normal cacheable"
-     "memory"},
-    {0x04, 0, "DCACHE_ACCESS",
-     "Data R/W from cache"},
-    {0x05, 0, "DTLB_REFILL",
-     "Data R/W that causes a TLB refill"},
-    {0x06, 0, "DREAD",
-     "Data read architecturally executed (note: architecturally executed = for"
-     "instructions that are unconditional or that pass the condition code)"},
-    {0x07, 0, "DWRITE",
-     "Data write architecturally executed"},
-    {0x08, 0, "INSTR_EXECUTED",
-     "All executed instructions"},
-    {0x09, 0, "EXC_TAKEN",
-     "Exception taken"},
-    {0x0A, 0, "EXC_EXECUTED",
-     "Exception return architecturally executed"},
-    {0x0B, 0, "CID_WRITE",
-     "Instruction that writes to the Context ID Register architecturally"
-     "executed"},
-    {0x0C, 0, "PC_WRITE",
-     "SW change of PC, architecturally executed (not by exceptions)"},
-    {0x0D, 0, "PC_IMM_BRANCH",
-     "Immediate branch instruction executed (taken or not)"},
-    {0x0E, 0, "PC_PROC_RETURN",
-     "Procedure return architecturally executed (not by exceptions)"},
-    {0x0F, 0, "UNALIGNED_ACCESS",
-     "Unaligned access architecturally executed"},
-    {0x10, 0, "PC_BRANCH_MIS_PRED",
-     "Branch mispredicted or not predicted. Counts pipeline flushes because of"
-     "misprediction"},
-    {0x12, 0, "PC_BRANCH_MIS_USED",
-    "Branch or change in program flow that could have been predicted"},
-    {0x40, 0, "WRITE_BUFFER_FULL",
-     "Any write buffer full cycle"},
-    {0x41, 0, "L2_STORE_MERGED",
-     "Any store that is merged in L2 cache"},
-    {0x42, 0, "L2_STORE_BUFF",
-     "Any bufferable store from load/store to L2 cache"},
-    {0x43, 0, "L2_ACCESS",
-     "Any access to L2 cache"},
-    {0x44, 0, "L2_CACH_MISS",
-     "Any cacheable miss in L2 cache"},
-    {0x45, 0, "AXI_READ_CYCLES",
-     "Number of cycles for an active AXI read"},
-    {0x46, 0, "AXI_WRITE_CYCLES",
-     "Number of cycles for an active AXI write"},
-    {0x47, 0, "MEMORY_REPLAY",
-     "Any replay event in the memory subsystem"},
-    {0x48, 0, "UNALIGNED_ACCESS_REPLAY",
-     "Unaligned access that causes a replay"},
-    {0x49, 0, "L1_DATA_MISS",
-     "L1 data cache miss as a result of the hashing algorithm"},
-    {0x4A, 0, "L1_INST_MISS",
-     "L1 instruction cache miss as a result of the hashing algorithm"},
-    {0x4B, 0, "L1_DATA_COLORING",
-     "L1 data access in which a page coloring alias occurs"},
-    {0x4C, 0, "L1_NEON_DATA",
-     "NEON data access that hits L1 cache"},
-    {0x4D, 0, "L1_NEON_CACH_DATA",
-     "NEON cacheable data access that hits L1 cache"},
-    {0x4E, 0, "L2_NEON",
-     "L2 access as a result of NEON memory access"},
-    {0x4F, 0, "L2_NEON_HIT",
-     "Any NEON hit in L2 cache"},
-    {0x50, 0, "L1_INST",
-     "Any L1 instruction cache access, excluding CP15 cache accesses"},
-    {0x51, 0, "PC_RETURN_MIS_PRED",
-     "Return stack misprediction at return stack pop"
-     "(incorrect target address)"},
-    {0x52, 0, "PC_BRANCH_FAILED",
-     "Branch prediction misprediction"},
-    {0x53, 0, "PC_BRANCH_TAKEN",
-     "Any predicted branch that is taken"},
-    {0x54, 0, "PC_BRANCH_EXECUTED",
-     "Any taken branch that is executed"},
-    {0x55, 0, "OP_EXECUTED",
-     "Number of operations executed"
-     "(in instruction or mutli-cycle instruction)"},
-    {0x56, 0, "CYCLES_INST_STALL",
-     "Cycles where no instruction available"},
-    {0x57, 0, "CYCLES_INST",
-     "Number of instructions issued in a cycle"},
-    {0x58, 0, "CYCLES_NEON_DATA_STALL",
-     "Number of cycles the processor waits on MRC data from NEON"},
-    {0x59, 0, "CYCLES_NEON_INST_STALL",
-     "Number of cycles the processor waits on NEON instruction queue or"
-     "NEON load queue"},
-    {0x5A, 0, "NEON_CYCLES",
-     "Number of cycles NEON and integer processors are not idle"},
-    {0x70, 0, "PMU0_EVENTS",
-     "Number of events from external input source PMUEXTIN[0]"},
-    {0x71, 0, "PMU1_EVENTS",
-     "Number of events from external input source PMUEXTIN[1]"},
-    {0x72, 0, "PMU_EVENTS",
-     "Number of events from both external input sources PMUEXTIN[0]"
-     "and PMUEXTIN[1]"},
-    {0xFF, 0, "CPU_CYCLES",
-     "Number of CPU cycles"},
-#endif
-};
 
 void usage()
 {
@@ -292,18 +175,22 @@ void usage()
            "   --list-events    list event types\n"
            "   --help           this message\n"
            "   --verbose        show extra status\n"
+           "   --verbose-log=lvl set daemon logging verbosity during setup\n"
+           "                    levels are: all,sfile,arcs,samples,module,misc\n"
            "   --setup          setup directories\n"
 #if defined(__i386__) || defined(__x86_64__)
            "   --quick          setup and select CPU_CLK_UNHALTED:60000\n"
-#else
+#elif defined(__arm__)
            "   --quick          setup and select CPU_CYCLES:150000\n"
+#elif defined(__mips__)
+           "   --quick          setup and select CYCLES:150000\n"
 #endif
            "   --timer          timer-based profiling\n"
            "   --status         show configuration\n"
            "   --start          start data collection\n"
            "   --stop           stop data collection\n"
            "   --reset          clears out data from current session\n"
-           "   --shutdown       kill the oprofile daeman\n"
+           "   --shutdown       kill the oprofile daemon\n"
            "   --callgraph=depth callgraph depth\n"
            "   --event=eventspec\n"
            "      Choose an event. May be specified multiple times.\n"
@@ -316,21 +203,72 @@ void usage()
           );
 }
 
-void setup_session_dir()
+int setup_device(void)
 {
-    int fd;
-
-    fd = open(OP_DATA_DIR, O_RDONLY);
-    if (fd != -1) {
-        system("rm -r "OP_DATA_DIR);
-        close(fd);
+    if (mkdir(OP_DRIVER_BASE, 0755)) {
+        if (errno != EEXIST) {
+            fprintf(stderr, "Cannot create directory "OP_DRIVER_BASE": %s\n",
+                    strerror(errno));
+            return -1;
+        }
     }
 
-    if (mkdir(OP_DATA_DIR, 755)) {
+    if (access(OP_DRIVER_BASE"/stats", F_OK)) {
+        if (system("mount -t oprofilefs nodev "OP_DRIVER_BASE)) {
+            return -1;
+        }
+    }
+
+    /* Selecting the event information by cpu_type has only been tested on MIPS */
+#if defined(__mips__)
+    /* Use cpu_type to select the events */
+    int fd = open(OP_DRIVER_BASE "/cpu_type", O_RDONLY);
+    if (fd < 0) {
+	fprintf(stderr, OP_DRIVER_BASE "/cpu_type: %s\n",
+		strerror(errno));
+	return -1;
+    }
+
+    char buf[512];
+    int n = read(fd, buf, sizeof(buf)-1);
+    close(fd);
+    if (n < 0) {
+	fprintf(stderr, OP_DRIVER_BASE "/cpu_type: %s\n",
+		strerror(errno));
+	return -1;
+    }
+    buf[n] = '\0';
+    for (unsigned int i = 0; i < ARRAYSZ(cpuevents); i++) {
+	if (strcmp(buf, cpuevents[i].cpu) == 0) {
+	    cpuevent = &cpuevents[i];
+	}
+    }
+    if (cpuevent == NULL) {
+	fprintf(stderr, "Unrecognised CPU type %s\n", buf);
+	return -1;
+    }
+    for (max_events = 0; max_events < MAX_EVENTS; max_events++) {
+	snprintf(buf, sizeof(buf), OP_DRIVER_BASE"/%d", max_events);
+	if (access(buf, F_OK) < 0)
+	    break;
+    }
+#else
+    max_events = MAX_EVENTS;
+    cpuevent = &cpuevents[0];
+#endif
+    return 0;
+}
+
+void setup_session_dir()
+{
+    if (access(OP_DATA_DIR, F_OK) == 0)
+        system("rm -r "OP_DATA_DIR);
+
+    if (mkdir(OP_DATA_DIR, 0755)) {
         fprintf(stderr, "Cannot create directory \"%s\": %s\n",
                 OP_DATA_DIR, strerror(errno));
     }
-    if (mkdir(OP_DATA_DIR"/samples", 644)) {
+    if (mkdir(OP_DATA_DIR"/samples", 0755)) {
         fprintf(stderr, "Cannot create directory \"%s\": %s\n",
                 OP_DATA_DIR"/samples", strerror(errno));
     }
@@ -342,26 +280,36 @@ int do_setup()
 
     setup_session_dir();
 
-    if (mkdir(OP_DRIVER_BASE, 644)) {
-        fprintf(stderr, "Cannot create directory "OP_DRIVER_BASE": %s\n",
-                strerror(errno));
-        return -1;
-    }
-    if (system("mount -t oprofilefs nodev "OP_DRIVER_BASE)) {
-        return -1;
-    }
     return 0;
+}
+
+void stringify_counters(char *ctr_string, int ctr_mask)
+{
+    int i, n, len;
+    char *p = ctr_string;
+
+    *p = '\0';
+    for (i=0; i<32; ++i) {
+        if (ctr_mask & (1<<i)) {
+	    p += sprintf(p, "%d,", i);
+	}
+    }
+    if (p != ctr_string) {
+        *(p-1) = '\0';  /* erase the final comma */
+    }
 }
 
 void do_list_events()
 {
     unsigned int i;
+    char ctrs[32*3+1];
 
-    printf("%-20s: %s\n", "name", "meaning");
+    printf("%-12s | %-30s: %s\n", "counter", "name", "meaning");
     printf("----------------------------------------"
            "--------------------------------------\n");
-    for (i = 0; i < sizeof(event_info)/sizeof(struct event_info); i++) {
-        printf("%-20s: %s\n", event_info[i].name, event_info[i].explanation);
+    for (i = 0; i < NEVENTS; i++) {
+        stringify_counters(ctrs, event_info[i].counters);
+        printf("%-12s | %-30s: %s\n", ctrs, event_info[i].name, event_info[i].explanation);
     }
 }
 
@@ -369,7 +317,7 @@ int find_event_idx_from_name(const char *name)
 {
     unsigned int i;
 
-    for (i = 0; i < sizeof(event_info)/sizeof(struct event_info); i++) {
+    for (i = 0; i < NEVENTS; i++) {
         if (!strcmp(name, event_info[i].name)) {
             return i;
         }
@@ -377,16 +325,16 @@ int find_event_idx_from_name(const char *name)
     return -1;
 }
 
-const char * find_event_name_from_id(int id)
+const char * find_event_name_from_id(int id, int mask)
 {
     unsigned int i;
 
-    for (i = 0; i < sizeof(event_info)/sizeof(struct event_info); i++) {
-        if (event_info[i].id == id) {
+    for (i = 0; i < NEVENTS; i++) {
+	if (event_info[i].id == id && (event_info[i].counters == 0 || (event_info[i].counters & mask))) {
             return event_info[i].name;
         }
     }
-    return NULL;
+    return "Undefined Event";
 }
 
 int process_event(const char *event_spec)
@@ -417,7 +365,21 @@ int process_event(const char *event_spec)
         return -1;
     }
 
-    /* Use defualt count */
+    /*
+     * check that the named event is valid for this event counter
+     * 'num_events' represents the cpu internal counter number
+     */
+    verbose("idx: %d, name: %s, mask: %02x, ctr#: %d\n",
+            event_idx, event_info[event_idx].name,
+            event_info[event_idx].counters, num_events);
+    if (event_info[event_idx].counters != 0 &&
+	(event_info[event_idx].counters & CTR(num_events)) == 0) {
+	fprintf(stderr, "Bad event name: %s for counter %d, see --list\n",
+		event_name, num_events);
+	return -1;
+    }
+
+    /* Use default count */
     if (count_name[0] == 0) {
         count_val = min_count[0];
     } else {
@@ -466,6 +428,9 @@ int read_num(const char* file)
     int fd = open(file, O_RDONLY);
     if (fd<0) return -1;
     int rd = read(fd, buffer, sizeof(buffer)-1);
+    close(fd);
+    if (rd < 0)
+	return -1;
     buffer[rd] = 0;
     return atoi(buffer);
 }
@@ -478,7 +443,7 @@ void do_status()
 
     printf("Driver directory: %s\n", OP_DRIVER_BASE);
     printf("Session directory: %s\n", OP_DATA_DIR);
-    for (i = 0; i < MAX_EVENTS; i++) {
+    for (i = 0; i < max_events; i++) {
         sprintf(fullname, OP_DRIVER_BASE"/%d/enabled", i);
         num = read_num(fullname);
         if (num > 0) {
@@ -487,7 +452,7 @@ void do_status()
             /* event name */
             sprintf(fullname, OP_DRIVER_BASE"/%d/event", i);
             num = read_num(fullname);
-            printf("    name: %s\n", find_event_name_from_id(num));
+            printf("    name: %s\n", find_event_name_from_id(num, CTR(i)));
 
             /* profile interval */
             sprintf(fullname, OP_DRIVER_BASE"/%d/count", i);
@@ -501,29 +466,54 @@ void do_status()
 
     num = read_num(OP_DATA_DIR"/lock");
     if (num >= 0) {
-        int fd;
         /* Still needs to check if this lock is left-over */
         sprintf(fullname, "/proc/%d", num);
-        fd = open(fullname, O_RDONLY);
-        if (fd == -1) {
+        if (access(fullname, R_OK) != 0) {
             printf("Session directory is not clean - do \"opcontrol --setup\""
                    " before you continue\n");
             return;
         }
         else {
-            close(fd);
+
             printf("oprofiled pid: %d\n", num);
             num = read_num(OP_DRIVER_BASE"/enable");
+
             printf("profiler is%s running\n", num == 0 ? " not" : "");
-            num = read_num(OP_DRIVER_BASE"/stats/cpu0/sample_received");
-            printf("  %9u samples received\n", num);
-            num = read_num(OP_DRIVER_BASE"/stats/cpu0/sample_lost_overflow");
-            printf("  %9u samples lost overflow\n", num);
+
+            DIR* dir = opendir(OP_DRIVER_BASE"/stats");
+            if (dir) {
+                for (struct dirent* dirent; !!(dirent = readdir(dir));) {
+                    if (strlen(dirent->d_name) >= 4 && memcmp(dirent->d_name, "cpu", 3) == 0) {
+                        char cpupath[256];
+                        strcpy(cpupath, OP_DRIVER_BASE"/stats/");
+                        strcat(cpupath, dirent->d_name);
+
+                        strcpy(fullname, cpupath);
+                        strcat(fullname, "/sample_received");
+                        num = read_num(fullname);
+                        printf("  %s %9u samples received\n", dirent->d_name, num);
+
+                        strcpy(fullname, cpupath);
+                        strcat(fullname, "/sample_lost_overflow");
+                        num = read_num(fullname);
+                        printf("  %s %9u samples lost overflow\n", dirent->d_name, num);
+
+                        strcpy(fullname, cpupath);
+                        strcat(fullname, "/sample_invalid_eip");
+                        num = read_num(fullname);
+                        printf("  %s %9u samples invalid eip\n", dirent->d_name, num);
+
+                        strcpy(fullname, cpupath);
+                        strcat(fullname, "/backtrace_aborted");
+                        num = read_num(fullname);
+                        printf("  %s %9u backtrace aborted\n", dirent->d_name, num);
+                    }
+                }
+                closedir(dir);
+            }
 
 #if defined(__i386__) || defined(__x86_64__)
             /* FIXME on ARM - backtrace seems broken there */
-            num = read_num(OP_DRIVER_BASE"/stats/cpu0/backtrace_aborted");
-            printf("  %9u backtrace aborted\n", num);
             num = read_num(OP_DRIVER_BASE"/backtrace_depth");
             printf("  %9u backtrace_depth\n", num);
 #endif
@@ -536,27 +526,28 @@ void do_status()
 
 void do_reset() 
 {
-    int fd;
+    int pid = read_num(OP_DATA_DIR"/lock");
+    if (pid >= 0)
+        kill(pid, SIGHUP);  /* HUP makes oprofiled close its sample files */
 
-    fd = open(OP_DATA_DIR"/samples/current", O_RDONLY);
-    if (fd == -1) {
-        return;
-    }
-    close(fd);
-    system("rm -r "OP_DATA_DIR"/samples/current");
+    if (access(OP_DATA_DIR"/samples/current", R_OK) == 0)
+      system("rm -r "OP_DATA_DIR"/samples/current");
 }
 
 int main(int argc, char * const argv[])
 {
     int option_index;
-    char command[1024];
+    bool show_status = false;
+    char* verbose_log = NULL;
 
     /* Initialize default strings */
     strcpy(vmlinux, "--no-vmlinux");
     strcpy(kernel_range, "");
 
+    setup_device();
+
     while (1) {
-        int c = getopt_long(argc, argv, "c:e:v:r:dhVt", long_options, &option_index);
+        int c = getopt_long(argc, argv, "c:e:v:r:dhVtl:", long_options, &option_index);
         if (c == -1) {
             break;
         }
@@ -565,7 +556,7 @@ int main(int argc, char * const argv[])
                 break;
             /* --callgraph */
             case 'c':
-		strncpy(callgraph, optarg, sizeof(callgraph));
+                strncpy(callgraph, optarg, sizeof(callgraph));
                 break;
             /* --event */
             case 'e':   
@@ -605,7 +596,7 @@ int main(int argc, char * const argv[])
                     kill(pid, SIGTERM);/* Politely ask the daemon to die */
                     sleep(1);
                     kill(pid, SIGKILL);
-                }   
+                }
                 setup_session_dir();
                 break;
             }
@@ -613,9 +604,13 @@ int main(int argc, char * const argv[])
             case 'V':
                 verbose_print++;
                 break;
+            /* --verbose-log */
+            case 'l':
+                verbose_log = strdup(optarg);
+                break;
             /* --status */
             case 't':
-                do_status();
+                show_status = true;
                 break;
             default:
                 usage();
@@ -630,11 +625,7 @@ int main(int argc, char * const argv[])
     }
 
     if (quick) {
-#if defined(__i386__) || defined(__x86_64__)
-        process_event("CPU_CLK_UNHALTED");
-#else
-        process_event("CPU_CYCLES");
-#endif
+        process_event(default_event);
         setup = 1;
     }
 
@@ -662,13 +653,14 @@ int main(int argc, char * const argv[])
     }
 
     if (num_events != 0 || timer != 0) {
+        char command[1024];
         int i;
 
-        strcpy(command, "oprofiled --session-dir="OP_DATA_DIR);
+        strcpy(command, argv[0]);
+        char* slash = strrchr(command, '/');
+        strcpy(slash ? slash + 1 : command, "oprofiled --session-dir="OP_DATA_DIR);
 
-#if defined(__i386__) || defined(__x86_64__)
-        /* Nothing */
-#elif !defined(WITH_ARM_V7_A)
+#if defined(__arm__) && !defined(WITH_ARM_V7_A)
         /* Since counter #3 can only handle CPU_CYCLES, check and shuffle the 
          * order a bit so that the maximal number of events can be profiled
          * simultaneously
@@ -703,24 +695,21 @@ int main(int argc, char * const argv[])
         }
 #endif
 
-
         /* Configure the counters and enable them */
         for (i = 0; i < num_events; i++) {
             int event_idx = selected_events[i];
             int setup_result = 0;
 
             if (i == 0) {
-                snprintf(command+strlen(command), 1024 - strlen(command), 
-                         " --events=");
-            }
-            else {
-                snprintf(command+strlen(command), 1024 - strlen(command), 
-                         ",");
+                snprintf(command + strlen(command), sizeof(command) - strlen(command),
+                        " --events=");
+            } else {
+                snprintf(command + strlen(command), sizeof(command) - strlen(command), ",");
             }
             /* Compose name:id:count:unit_mask:kernel:user, something like
              * --events=CYCLES_DATA_STALL:2:0:200000:0:1:1,....
              */
-            snprintf(command+strlen(command), 1024 - strlen(command), 
+            snprintf(command + strlen(command), sizeof(command) - strlen(command),
                      "%s:%d:%d:%d:%d:1:1",
                      event_info[event_idx].name,
                      event_info[event_idx].id,
@@ -745,23 +734,37 @@ int main(int argc, char * const argv[])
 
         if (timer == 0) {
             /* If not in timer mode, disable unused counters */
-            for (i = num_events; i < MAX_EVENTS; i++) {
+            for (i = num_events; i < max_events; i++) {
                 echo_dev("0", 0, "enabled", i);
             }
         } else {
             /* Timer mode uses empty event list */
-            snprintf(command+strlen(command), 1024 - strlen(command),
-                     " --events=");
+            snprintf(command + strlen(command), sizeof(command) - strlen(command),
+                    " --events=");
         }
 
-        snprintf(command+strlen(command), 1024 - strlen(command), " %s",
-                 vmlinux);
+        snprintf(command + strlen(command), sizeof(command) - strlen(command),
+                " %s", vmlinux);
         if (kernel_range[0]) {
-            snprintf(command+strlen(command), 1024 - strlen(command), " %s",
-                     kernel_range);
+            snprintf(command + strlen(command), sizeof(command) - strlen(command),
+                    " %s", kernel_range);
         }
+
+        if (verbose_log) {
+            snprintf(command + strlen(command), sizeof(command) - strlen(command),
+                    " --verbose=%s", verbose_log);
+        }
+
+        printf("Starting oprofiled...\n");
         verbose("command: %s\n", command);
-        system(command);
+
+        int rc = system(command);
+        if (rc) {
+            fprintf(stderr, "Failed, oprofile returned exit code: %d\n", rc);
+        } else {
+            sleep(2);
+            printf("Ready\n");
+        }
     }
 
     if (start) {
@@ -771,5 +774,9 @@ int main(int argc, char * const argv[])
     if (stop) {
         echo_dev("1", 0, "dump", -1);
         echo_dev("0", 0, "enable", -1);
+    }
+
+    if (show_status) {
+        do_status();
     }
 }
